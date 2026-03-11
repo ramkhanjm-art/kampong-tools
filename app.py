@@ -1,144 +1,85 @@
-import streamlit as st
+import os
 import asyncio
 import io
-import os
-import random
+import logging
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from rembg import remove
 from PIL import Image
 import segno
-from reportlab.pdfgen import canvas
-from deep_translator import GoogleTranslator
 import edge_tts
 import yt_dlp
 from groq import Groq
-import base64
+from deep_translator import GoogleTranslator
 
-# កំណត់ការបង្ហាញទំព័រ
-st.set_page_config(page_title="Smart AI Tools", page_icon="🛠️", layout="centered")
+# --- លាក់ API and token ដោយប្រើ os.getenv ---
+# វានឹងទៅទាញយកតម្លៃពី Environment Variables ដែលយើងបានកំណត់ក្នុង Render ឬក្នុងកុំព្យូទ័រ
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROQ_API = os.getenv("GROQ_API_KEY")
 
-# --- Sidebar ---
-with st.sidebar:
-    st.title("🛠️ All-in-One Tools")
-    tool = st.radio("ជ្រើសរើសឧបករណ៍:", [
-        "1. AI ធ្វើឱ្យរូបច្បាស់", "2. Text to Speech", "3. Video Downloader",
-        "4. លុប Background", "5. Image to PDF", "6. QR Code Maker",
-        "7. Spin ចៃដន្យ", "8. បកប្រែ", "9. Image to Prompt", "10. AI Assistant"
-    ])
-    st.divider()
-    api_key = st.text_input("Groq API Key:", type="password", help="យកពី console.groq.com")
+# កំណត់ Menu
+MENU = [['លុប Background', 'Text to Speech'], ['បង្កើត QR Code', 'បកប្រែ'], ['AI Assistant', 'ជំនួយ']]
 
-# --- Functions ជំនួយ ---
-async def generate_voice(text, voice):
-    communicate = edge_tts.Communicate(text, voice)
-    out = io.BytesIO()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_markup = ReplyKeyboardMarkup(MENU, resize_keyboard=True)
+    await update.message.reply_text("សួស្ដី! ខ្ញុំជា Bot ជំនួយការឆ្លាតវៃ។ សូមរើស Tool ខាងក្រោម៖", reply_markup=reply_markup)
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("⏳ កំពុងលុប Background...")
+    photo_file = await update.message.photo[-1].get_file()
+    img_bytes = await photo_file.download_as_bytearray()
+    
+    input_img = Image.open(io.BytesIO(img_bytes))
+    output_img = remove(input_img)
+    
+    out_io = io.BytesIO()
+    output_img.save(out_io, 'PNG')
+    out_io.seek(0)
+    
+    await update.message.reply_document(document=out_io, filename="no_bg.png")
+    await status_msg.delete()
+
+async def tts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text("សូមវាយ: /tts អត្ថបទដែលអ្នកចង់ឱ្យនិយាយ")
+        return
+    
+    communicate = edge_tts.Communicate(text, "km-KH-SreymomNeural")
+    out_io = io.BytesIO()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
-            out.write(chunk["data"])
-    return out.getvalue()
+            out_io.write(chunk["data"])
+    out_io.seek(0)
+    await update.message.reply_voice(voice=out_io)
 
-def encode_image(image_file):
-    return base64.b64encode(image_file.read()).decode('utf-8')
+async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not GROQ_API:
+        await update.message.reply_text("Error: GROQ_API_KEY មិនទាន់បានដំឡើង។")
+        return
+        
+    user_msg = update.message.text
+    client = Groq(api_key=GROQ_API)
+    chat = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": user_msg}]
+    )
+    await update.message.reply_text(chat.choices[0].message.content)
 
-# --- ដំណើរការ Tools នីមួយៗ ---
+def main():
+    if not TOKEN:
+        print("Error: TELEGRAM_TOKEN មិនត្រូវបានរកឃើញក្នុង Environment Variables ទេ។")
+        return
 
-if tool == "1. AI ធ្វើឱ្យរូបច្បាស់":
-    st.header("✨ AI Image Upscaler")
-    file = st.file_uploader("Upload Image", type=['jpg', 'png'])
-    if file:
-        img = Image.open(file)
-        res = img.resize((img.width*2, img.height*2), Image.LANCZOS)
-        st.image(res, caption="រូបភាពច្បាស់ជាងមុន ២ដង")
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("tts", tts))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat))
+    
+    print("Bot is running...")
+    app.run_polling()
 
-elif tool == "2. Text to Speech":
-    st.header("🗣️ Natural AI Voice")
-    txt = st.text_area("បញ្ចូលអត្ថបទ:", "សួស្ដី! ស្វាគមន៍មកកាន់វែបសាយរបស់យើង។")
-    voice = st.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural", "en-US-AvaNeural"])
-    if st.button("បំប្លែងជាសំឡេង"):
-        with st.spinner("កំពុងបង្កើត..."):
-            audio_data = asyncio.run(generate_voice(txt, voice))
-            st.audio(audio_data)
-
-elif tool == "3. Video Downloader":
-    st.header("📹 Video Downloader")
-    v_url = st.text_input("បញ្ចូល Link វីដេអូ (YT/TikTok):")
-    if st.button("ទាញយក"):
-        try:
-            with st.spinner("កំពុងទាញយក..."):
-                ydl_opts = {'format': 'best', 'outtmpl': 'v.mp4'}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([v_url])
-                with open("v.mp4", "rb") as f:
-                    st.download_button("Download Now", f, file_name="video.mp4")
-                os.remove("v.mp4")
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-elif tool == "4. លុប Background":
-    st.header("🖼️ Remove Background")
-    file = st.file_uploader("ជ្រើសរើសរូបភាព", type=['jpg', 'png'])
-    if file:
-        img = Image.open(file)
-        with st.spinner("កំពុងលុប..."):
-            res = remove(img)
-            st.image(res)
-
-elif tool == "5. Image to PDF":
-    st.header("📄 Image to PDF")
-    files = st.file_uploader("Upload Images", accept_multiple_files=True)
-    if files and st.button("បង្កើត PDF"):
-        buf = io.BytesIO()
-        c = canvas.Canvas(buf)
-        for f in files:
-            img = Image.open(f)
-            c.setPageSize((img.width, img.height))
-            c.drawImage(f, 0, 0)
-            c.showPage()
-        c.save()
-        st.download_button("Download PDF", buf.getvalue(), "file.pdf")
-
-elif tool == "6. QR Code Maker":
-    st.header("🏁 QR Code Maker")
-    data = st.text_input("Link/Text:")
-    if data:
-        qr = segno.make_qr(data)
-        buf = io.BytesIO()
-        qr.save(buf, kind='png', scale=10)
-        st.image(buf.getvalue())
-
-elif tool == "7. Spin ចៃដន្យ":
-    st.header("🎡 Lucky Spin")
-    items = st.text_input("ឈ្មោះ (បំបែកដោយក្បៀស):", "A, B, C")
-    if st.button("Spin"):
-        res = random.choice(items.split(","))
-        st.success(f"លទ្ធផល៖ {res}")
-
-elif tool == "8. បកប្រែ":
-    st.header("🌐 Translator")
-    t_in = st.text_area("អត្ថបទដើម:")
-    lang = st.selectbox("ទៅជា:", ["khmer", "english", "chinese (simplified)"])
-    if st.button("បកប្រែ"):
-        res = GoogleTranslator(source='auto', target=lang).translate(t_in)
-        st.write(res)
-
-elif tool == "9. Image to Prompt":
-    st.header("🖼️ Image to Prompt (Groq Vision)")
-    img_v = st.file_uploader("Upload Image", type=['jpg', 'png'])
-    if img_v and api_key:
-        client = Groq(api_key=api_key)
-        base64_image = encode_image(img_v)
-        chat = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
-            messages=[{"role": "user", "content": [{"type": "text", "text": "Describe this image for a prompt:"}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}]
-        )
-        st.write(chat.choices[0].message.content)
-
-elif tool == "10. AI Assistant":
-    st.header("🤖 AI Assistant")
-    if api_key:
-        client = Groq(api_key=api_key)
-        q = st.chat_input("សួរអ្វីមួយ...")
-        if q:
-            res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": q}])
-            st.markdown(res.choices[0].message.content)
-    else:
-        st.warning("បញ្ចូល API Key សិន")
+if __name__ == '__main__':
+    main()
