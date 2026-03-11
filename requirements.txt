@@ -1,4 +1,4 @@
-streamlit
+python-telegram-bot
 rembg
 Pillow
 edge-tts
