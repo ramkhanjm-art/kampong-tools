@@ -1,0 +1,10 @@
+streamlit
+rembg
+Pillow
+edge-tts
+yt-dlp
+segno
+reportlab
+deep-translator
+groq
+watchdog
