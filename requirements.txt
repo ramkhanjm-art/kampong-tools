@@ -7,4 +7,3 @@ segno
 reportlab
 deep-translator
 groq
-watchdog
